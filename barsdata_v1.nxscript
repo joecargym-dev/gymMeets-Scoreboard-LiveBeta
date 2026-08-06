@@ -1,0 +1,231 @@
+<%
+var
+  aSession: TnxSession;
+  aDatabase: TnxDatabase;
+  qQueue: TnxQuery;
+  qGymnast: TnxQuery;
+  qGym: TnxQuery;
+  qMeet: TnxQuery;
+  qDivisions: TnxQuery;
+
+  dataID: Integer;
+  meetID: Integer;
+  gymnastNum: Integer;
+  eventID: Integer;
+  eventNum: Integer;
+  betterCount: Integer;
+
+  firstName: String;
+  lastName: String;
+  levelName: String;
+  sessionName: String;
+  scoreText: String;
+  gymName: String;
+  meetName: String;
+  divisionName: String;
+  aaRankText: String;
+  vtText: String;
+  ubText: String;
+  bbText: String;
+  fxText: String;
+  aaText: String;
+
+  gymnastBirthday: TDateTime;
+  divisionStart: TDateTime;
+  divisionEnd: TDateTime;
+  currentAA: Double;
+  peerAA: Double;
+  foundDivision: Boolean;
+  firstRecord: Boolean;
+  requestedMeetID: Integer;
+
+function ScoreOrBlank(aValue: Double): String;
+begin
+  if aValue > 0 then
+    Result := FormatFloat('0.000', aValue)
+  else
+    Result := '';
+end;
+
+begin
+  firstRecord := True;
+  requestedMeetID := 0;
+
+  aSession := TnxSession.Create(nil);
+  aDatabase := TnxDatabase.Create(nil);
+  qQueue := TnxQuery.Create(nil);
+  qGymnast := TnxQuery.Create(nil);
+  qGym := TnxQuery.Create(nil);
+  qMeet := TnxQuery.Create(nil);
+  qDivisions := TnxQuery.Create(nil);
+
+  try
+    aSession.ServerEngine := ServerEngine;
+    aSession.Active := True;
+
+    aDatabase.Session := aSession;
+    aDatabase.AliasName := 'ProScore';
+    aDatabase.Open;
+
+    qQueue.Database := aDatabase;
+    qGymnast.Database := aDatabase;
+    qGym.Database := aDatabase;
+    qMeet.Database := aDatabase;
+    qDivisions.Database := aDatabase;
+
+    qQueue.SQL.Text :=
+      'SELECT DataID, MeetID, EventID, Event, Num, Session, Level, FName, LName, Score ' +
+      'FROM ScoreQueue WHERE Event = 2 ';
+    if requestedMeetID > 0 then
+      qQueue.SQL.Text := qQueue.SQL.Text + 'AND MeetID = ' + IntToStr(requestedMeetID) + ' ';
+    qQueue.SQL.Text := qQueue.SQL.Text + 'ORDER BY DataID DESC';
+    qQueue.Open;
+
+    while not qQueue.EOF do
+    begin
+      dataID := StrToIntDef(qQueue.FieldByName('DataID').AsString, 0);
+      meetID := StrToIntDef(qQueue.FieldByName('MeetID').AsString, 0);
+      gymnastNum := StrToIntDef(qQueue.FieldByName('Num').AsString, 0);
+      eventID := StrToIntDef(qQueue.FieldByName('EventID').AsString, 2);
+      eventNum := StrToIntDef(qQueue.FieldByName('Event').AsString, 2);
+      sessionName := qQueue.FieldByName('Session').AsString;
+      levelName := qQueue.FieldByName('Level').AsString;
+      firstName := qQueue.FieldByName('FName').AsString;
+      lastName := qQueue.FieldByName('LName').AsString;
+      scoreText := FormatFloat('0.000', qQueue.FieldByName('Score').AsFloat);
+
+      gymName := '';
+      meetName := '';
+      divisionName := '';
+      aaRankText := '';
+      vtText := '';
+      ubText := '';
+      bbText := '';
+      fxText := '';
+      aaText := '';
+      currentAA := 0;
+      foundDivision := False;
+
+      qGymnast.Close;
+      qGymnast.SQL.Text :=
+        'SELECT First_Name, Last_Name, Level, Session, Birthday, E1Final, E2Final, E3Final, E4Final, AA, Gym ' +
+        'FROM Gymnasts WHERE MeetID = ' + IntToStr(meetID) +
+        ' AND Num = ' + IntToStr(gymnastNum);
+      qGymnast.Open;
+
+      if not qGymnast.EOF then
+      begin
+        firstName := qGymnast.FieldByName('First_Name').AsString;
+        lastName := qGymnast.FieldByName('Last_Name').AsString;
+        levelName := qGymnast.FieldByName('Level').AsString;
+        sessionName := qGymnast.FieldByName('Session').AsString;
+        gymnastBirthday := qGymnast.FieldByName('Birthday').AsDateTime;
+
+        vtText := ScoreOrBlank(qGymnast.FieldByName('E1Final').AsFloat);
+        ubText := ScoreOrBlank(qGymnast.FieldByName('E2Final').AsFloat);
+        bbText := ScoreOrBlank(qGymnast.FieldByName('E3Final').AsFloat);
+        fxText := ScoreOrBlank(qGymnast.FieldByName('E4Final').AsFloat);
+        currentAA := qGymnast.FieldByName('AA').AsFloat;
+        aaText := ScoreOrBlank(currentAA);
+
+        qGym.Close;
+        qGym.SQL.Text :=
+          'SELECT * FROM Gyms WHERE GymID = ' + qGymnast.FieldByName('Gym').AsString;
+        qGym.Open;
+        if not qGym.EOF then
+          gymName := qGym.FieldByName('Official Name').AsString;
+
+        { Birthday is used only inside this local request to derive the
+          meet-defined division label. It is never written to the response. }
+        qDivisions.Close;
+        qDivisions.SQL.Text :=
+          'SELECT Level, Session, Start_Date, End_Date, Name FROM SessAgeGrp ' +
+          'WHERE MeetID = ' + IntToStr(meetID);
+        qDivisions.Open;
+        while (not qDivisions.EOF) and (not foundDivision) do
+        begin
+          if (UpperCase(Trim(qDivisions.FieldByName('Level').AsString)) = UpperCase(Trim(levelName))) and
+             (UpperCase(Trim(qDivisions.FieldByName('Session').AsString)) = UpperCase(Trim(sessionName))) and
+             (not qDivisions.FieldByName('Start_Date').IsNull) and
+             (not qDivisions.FieldByName('End_Date').IsNull) then
+          begin
+            divisionStart := qDivisions.FieldByName('Start_Date').AsDateTime;
+            divisionEnd := qDivisions.FieldByName('End_Date').AsDateTime;
+            if (gymnastBirthday >= divisionStart) and (gymnastBirthday <= divisionEnd) then
+            begin
+              divisionName := Trim(qDivisions.FieldByName('Name').AsString);
+              foundDivision := divisionName <> '';
+            end;
+          end;
+          qDivisions.Next;
+        end;
+        if not foundDivision then
+        begin
+          qDivisions.First;
+          while (not qDivisions.EOF) and (not foundDivision) do
+          begin
+            if (UpperCase(Trim(qDivisions.FieldByName('Session').AsString)) = UpperCase(Trim(sessionName))) and
+               (not qDivisions.FieldByName('Start_Date').IsNull) and
+               (not qDivisions.FieldByName('End_Date').IsNull) then
+            begin
+              divisionStart := qDivisions.FieldByName('Start_Date').AsDateTime;
+              divisionEnd := qDivisions.FieldByName('End_Date').AsDateTime;
+              if (gymnastBirthday >= divisionStart) and (gymnastBirthday <= divisionEnd) then
+              begin
+                divisionName := Trim(qDivisions.FieldByName('Name').AsString);
+                foundDivision := divisionName <> '';
+              end;
+            end;
+            qDivisions.Next;
+          end;
+        end;
+
+        aaRankText := '';
+      end;
+
+      qMeet.Close;
+      qMeet.SQL.Text := 'SELECT Name FROM Meets WHERE MeetID = ' + IntToStr(meetID);
+      qMeet.Open;
+      if not qMeet.EOF then
+        meetName := qMeet.FieldByName('Name').AsString;
+
+      { The currently posted Bars score is authoritative for the UB tile. }
+      if eventNum = 2 then
+        ubText := scoreText;
+
+      if not firstRecord then
+        Output.Write('~');
+
+      Output.Write(IntToStr(dataID)); Output.Write('|');
+      Output.Write(IntToStr(gymnastNum)); Output.Write('|');
+      Output.Write(sessionName); Output.Write('|');
+      Output.Write(levelName); Output.Write('|');
+      Output.Write(firstName); Output.Write('|');
+      Output.Write(lastName); Output.Write('|');
+      Output.Write(scoreText); Output.Write('|');
+      Output.Write(aaText); Output.Write('|');
+      Output.Write(aaRankText); Output.Write('|');
+      Output.Write(gymName); Output.Write('|');
+      Output.Write(divisionName); Output.Write('|');
+      Output.Write(vtText); Output.Write('|');
+      Output.Write(ubText); Output.Write('|');
+      Output.Write(bbText); Output.Write('|');
+      Output.Write(fxText); Output.Write('|');
+      Output.Write(meetName); Output.Write('|');
+      Output.Write(IntToStr(meetID));
+
+      firstRecord := False;
+      qQueue.Next;
+    end;
+
+  finally
+    qDivisions.Free;
+    qMeet.Free;
+    qGym.Free;
+    qGymnast.Free;
+    qQueue.Free;
+    aDatabase.Free;
+    aSession.Free;
+  end;
+end.
+%>
